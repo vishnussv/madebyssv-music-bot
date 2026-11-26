@@ -1,0 +1,37 @@
+name: Extract bot project
+on:
+  push:
+    branches: [main]
+    paths:
+      - MADEBYSSV-Music-Bot.zip
+      - .github/workflows/extract.yml
+permissions:
+  contents: write
+jobs:
+  extract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip bot project to repo root
+        run: |
+          set -e
+          mkdir -p _extracted
+          unzip -o MADEBYSSV-Music-Bot.zip -d _extracted -x "*/node_modules/*" "node_modules/*" "*/.env" ".env"
+          count=$(find _extracted -mindepth 1 -maxdepth 1 | wc -l)
+          if [ "$count" = "1" ] && [ -d "$(find _extracted -mindepth 1 -maxdepth 1)" ]; then
+            top=$(find _extracted -mindepth 1 -maxdepth 1)
+            cp -a "$top"/. .
+          else
+            cp -a _extracted/. .
+          fi
+          rm -rf _extracted node_modules .env
+          find . -name ".env" -delete || true
+          if [ ! -f .gitignore ]; then printf "node_modules/\n.env\n" > .gitignore; fi
+          ls -la
+      - name: Commit extracted files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm --cached MADEBYSSV-Music-Bot.zip || true
+          git add -A
+          if git diff --cached --quiet; then echo "No changes"; else git commit -m "Extract MADEBYSSV Music Bot project files (exclude node_modules and .env)"; git push; fi
