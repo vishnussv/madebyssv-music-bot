@@ -1,0 +1,24 @@
+{
+  "name": "madebyssv-music-bot",
+  "version": "1.0.0",
+  "description": "MADEBYSSV Discord Music Bot — music, moderation, fun and utility commands",
+  "main": "index.js",
+  "scripts": {
+    "start": "node shard.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.100",
+    "discord.js": "^14.17.3",
+    "dotenv": "^18.0.10",
+    "genius-lyrics": "^4.4.7",
+    "lavalink-client": "^2.3.8",
+    "poru": "^5.3.0",
+    "sequelize": "^6.37.7",
+    "sqlite3": "^5.1.7",
+    "undici": "^6.21.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: madebyssv-music-bot
+    env: node
+    buildCommand: npm install --no-audit --no-fund
+    startCommand: node shard.js
+    autoDeploy: false
