@@ -1116,6 +1116,15 @@ module.exports = {
 
   category: "Utility",
 
+  // /afk answers with showModal() (/afk set) or interaction.reply()
+  // (/afk status, /afk remove, already-AFK set) as its FIRST response.
+  // A deferred interaction cannot show a modal or be replied to, so the
+  // handler in events/interactionCreate.js must NOT deferReply() for
+  // this command — otherwise every /afk fails InteractionAlreadyReplied.
+  // All first responses here are immediate (in-memory lookups), so the
+  // 3-second interaction window is not a risk.
+  noDefer: true,
+
   data:
     new SlashCommandBuilder()
       .setName("afk")
