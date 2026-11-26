@@ -108,8 +108,8 @@ module.exports = {
             try {
               await interaction.reply({
                 content: "This command is no longer available.",
-                flags: Collection,
-  MessageFlags.Ephemeral
+                flags: MessageFlags.Ephemeral
+
               });
             } catch {}
           }
