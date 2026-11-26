@@ -122,12 +122,22 @@ module.exports = {
          *
          * Help V2 message ko directly reply karega.
          * Isliye yahan deferReply nahi karna.
+         *
+         * Poru music commands (commands/music/*) bhi yahan defer
+         * nahi karte: wo real Interaction object lete hain aur apna
+         * khud ka defer/reply lifecycle handle karte hain (neeche
+         * execute section dekho). Yahan defer karne se unka
+         * interaction.reply() InteractionAlreadyReplied se fail
+         * hota hai — /247 aur /autoplay isi liye error de rahe the.
+         * Baaki (non-Poru) commands ke liye defer yahin hota hai,
+         * kyunki unka message adapter deferred state ko khud
+         * handle karta hai.
          */
         const isHelpCommand =
           commandName === "help" ||
           command.name === "help";
 
-        if (!isHelpCommand && !command.noDefer) {
+        if (!isHelpCommand && !command.noDefer && !command.__madebyssvPoruMusic) {
           try {
             await interaction.deferReply();
           } catch (error) {
