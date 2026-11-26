@@ -1,4 +1,5 @@
 const {
+  Collection,
   MessageFlags
 } = require("discord.js");
 
@@ -107,7 +108,8 @@ module.exports = {
             try {
               await interaction.reply({
                 content: "This command is no longer available.",
-                flags: MessageFlags.Ephemeral
+                flags: Collection,
+  MessageFlags.Ephemeral
               });
             } catch {}
           }
@@ -334,6 +336,24 @@ function createInteractionMessage(
         : "",
 
     createdTimestamp: Date.now(),
+    /*
+     * --------------------------------------------------------------
+     * mentions
+     * --------------------------------------------------------------
+     *
+     * Slash commands have no Message.mentions: prefix commands read
+     * message.mentions.members / .users / .roles / .channels, and the
+     * adapter used to leave mentions undefined, so EVERY such command
+     * crashed on slash with:
+     *   TypeError: Cannot read properties of undefined
+     *     (reading 'members')
+     * e.g. /hug in the live Railway logs at 2026-11-26 10:05:20 PST,
+     * and the same crash in /pat, /slap, /avatar, /ship, /kick,
+     * /ban, /mute, /warn, /lock, /unlock, /roleinfo, /channelinfo
+     * and more. Build the same shape from the interaction's
+     * resolved options so all of them work unchanged.
+     */
+    mentions: buildInteractionMentions(interaction),
 
     /*
      * --------------------------------------------------------------
@@ -412,6 +432,105 @@ function createInteractionMessage(
   return message;
 }
 
+
+/* =================================================================
+ * INTERACTION MENTIONS
+ * =================================================================
+ *
+ * Build a Message.mentions-shaped object for the adapter from the
+ * slash interaction's resolved options, so prefix-style commands
+ * keep working unchanged when run as slash commands.
+ *
+ * - members / users: discord.js Collections, so .first(), .size,
+ *   .values(), .keys() and .has(id) all behave like the real thing.
+ *   Insertion order follows the slash options' order, so /ship's
+ *   [...members.values()][1] still means "the second user".
+ * - roles / channels: same, from role / channel options.
+ * - everyone: slash commands never mention @everyone here.
+ *
+ * If an option cannot be resolved (member left, uncached), that
+ * entry is simply absent and the command falls back to its own
+ * "mention someone" reply instead of crashing.
+ */
+function buildInteractionMentions(interaction) {
+  const users = new Collection();
+  const members = new Collection();
+  const roles = new Collection();
+  const channels = new Collection();
+
+  const options = interaction.options;
+
+  if (options && Array.isArray(options.data)) {
+    const walk = (opts) => {
+      for (const opt of opts ?? []) {
+        if (!opt) continue;
+
+        // Subcommand / subcommand group: recurse into its options.
+        if (opt.type === 1 || opt.type === 2) {
+          walk(opt.options);
+          continue;
+        }
+
+        try {
+          if (opt.type === 6) {
+            // User option.
+            const user = options.getUser?.(opt.name) ?? null;
+            if (user) users.set(user.id, user);
+
+            let member = null;
+            try {
+              member = options.getMember?.(opt.name) ?? null;
+            } catch {}
+            if (
+              !member &&
+              user &&
+              interaction.guild?.members?.cache
+            ) {
+              member =
+                interaction.guild.members.cache.get(user.id) ?? null;
+            }
+            if (member) members.set(member.id, member);
+          } else if (opt.type === 8) {
+            // Role option.
+            const role = options.getRole?.(opt.name) ?? null;
+            if (role) roles.set(role.id, role);
+          } else if (opt.type === 7) {
+            // Channel option.
+            const channel = options.getChannel?.(opt.name) ?? null;
+            if (channel) channels.set(channel.id, channel);
+          } else if (opt.type === 9) {
+            // Mentionable option: a User or a Role.
+            const mentionable =
+              options.getMentionable?.(opt.name) ?? null;
+            if (mentionable) {
+              if (mentionable.user) {
+                users.set(mentionable.user.id, mentionable.user);
+                const member =
+                  interaction.guild?.members?.cache?.get(
+                    mentionable.user.id
+                  ) ?? null;
+                if (member) members.set(member.id, member);
+              } else {
+                roles.set(mentionable.id, mentionable);
+              }
+            }
+          }
+        } catch {}
+      }
+    };
+
+    walk(options.data);
+  }
+
+  return {
+    members,
+    users,
+    roles,
+    channels,
+    everyone: false,
+    repliedUser: null,
+  };
+}
 
 /* =================================================================
  * ERROR HANDLER
