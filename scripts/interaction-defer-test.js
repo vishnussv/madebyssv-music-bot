@@ -34,6 +34,21 @@ require.cache[modelPath] = {
 const interactionCreate = require("../events/interactionCreate");
 const cmd247 = require("../commands/music/247");
 const cmdAutoplay = require("../commands/music/autoplay");
+const cmdAfk = require("../commands/general/afk");
+
+// /afk must opt out of the handler defer (see its noDefer comment): its
+// first response is showModal() (/afk set) or interaction.reply()
+// (status / remove / already-AFK set), both of which throw on an
+// already-deferred interaction.
+if (cmdAfk.noDefer !== true) {
+  throw new Error("afk command must set noDefer: true");
+}
+
+// Keep the real /afk "set" flow side-effect free: no stored AFK record.
+const Database = require("../database/Database");
+if (Database && typeof Database.getAfk === "function") {
+  Database.getAfk = () => null;
+}
 
 // CommandHandler marks every commands/music/* command with this flag.
 cmd247.__madebyssvPoruMusic = true;
@@ -59,8 +74,13 @@ class FakeInteraction {
       voice: { channel: { id: "vc1" } },
     };
     this.guild = { id: "guild1", channels: { cache: new Map() } };
+    this.guildId = "guild1";
     this.channel = { id: "ch1" };
-    this.options = { getString: () => null, data: [] };
+    this.options = {
+      getString: () => null,
+      getSubcommand: () => "set",
+      data: [],
+    };
   }
   isChatInputCommand() { return true; }
   isButton() { return false; }
@@ -94,6 +114,17 @@ class FakeInteraction {
     }
     this.calls.push("followUp");
     return { id: "msg2" };
+  }
+  async showModal() {
+    if (this.deferred || this.replied) throw alreadyRepliedError();
+    this.calls.push("showModal");
+  }
+  async awaitModalSubmit() {
+    // No modal submission in the test: the setup flow just ends.
+    return null;
+  }
+  async fetchReply() {
+    return { id: "msg1" };
   }
 }
 
@@ -201,6 +232,42 @@ async function runCase(label, client, commandName, makeInteraction) {
     check(
       "non-Poru command still gets handler defer + adapter editReply",
       interaction.calls.join(",") === "deferReply,editReply" && errors.length === 0,
+      `calls=${interaction.calls.join(",")} errors=${errors.join(" | ")}`
+    );
+  }
+
+  // 5. Real /afk set through the real handler: must reach showModal
+  // without the handler deferring first.
+  {
+    const client = {
+      commands: new Map([["afk", cmdAfk]]),
+      poru: { players: new Map() },
+    };
+    const { interaction, errors } = await runCase(
+      "/afk set", client, "afk", () => new FakeInteraction("afk")
+    );
+    check(
+      "/afk set reaches showModal without handler defer",
+      interaction.calls.join(",") === "showModal" && errors.length === 0,
+      `calls=${interaction.calls.join(",")} errors=${errors.join(" | ")}`
+    );
+  }
+
+  // 6. Control: the same /afk command WITHOUT noDefer must fail, proving
+  // this test catches the bug if the flag is ever dropped.
+  {
+    const afkNoFlag = { ...cmdAfk };
+    delete afkNoFlag.noDefer;
+    const client = {
+      commands: new Map([["afk", afkNoFlag]]),
+      poru: { players: new Map() },
+    };
+    const { interaction, errors } = await runCase(
+      "/afk set (no flag)", client, "afk", () => new FakeInteraction("afk")
+    );
+    check(
+      "/afk set without noDefer fails as before (control)",
+      interaction.calls.includes("deferReply") && errors.length > 0,
       `calls=${interaction.calls.join(",")} errors=${errors.join(" | ")}`
     );
   }
