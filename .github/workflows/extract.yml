@@ -32,6 +32,6 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git rm --cached MADEBYSSV-Music-Bot.zip || true
+          rm -f MADEBYSSV-Music-Bot.zip
           git add -A
           if git diff --cached --quiet; then echo "No changes"; else git commit -m "Extract MADEBYSSV Music Bot project files (exclude node_modules and .env)"; git push; fi
