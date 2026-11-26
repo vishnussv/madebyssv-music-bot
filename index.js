@@ -11,14 +11,23 @@ const config = require("./config");
 const { loadCommands } = require("./handlers/CommandHandler");
 const Database = require("./database/Database");
 
-// ── Client ──────────────────────────────────────────────────────────────────
+// ── Intents — no privileged intents by default ──────────────────────────────
+// Discord rejects login with "Used disallowed intents" if the bot requests
+// MessageContent / GuildMembers without those toggles enabled in the
+// Developer Portal. This bot therefore starts with standard intents only,
+// so it logs in on Railway with no portal change. Slash commands (145) and
+// the live dashboard work on standard intents.
+// Trade-off, stated honestly: prefix commands (+play etc.) need
+// MessageContent, so they will NOT work until the owner enables
+// Message Content Intent + Server Members Intent in the Portal AND sets
+// ENABLE_PRIVILEGED_INTENTS=true in Railway Variables, then redeploys.
+const PRIVILEGED_INTENTS = String(process.env.ENABLE_PRIVILEGED_INTENTS || "").toLowerCase() === "true";
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
+    ...(PRIVILEGED_INTENTS ? [GatewayIntentBits.MessageContent, GatewayIntentBits.GuildMembers] : []),
     GatewayIntentBits.GuildVoiceStates,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel, Partials.Message],
