@@ -241,65 +241,26 @@ module.exports = {
 
     // ══════════════════════════════════════════════════════════════════════════
     // SLASH COMMAND REGISTRATION
+    // Discord allows at most 100 global chat-input (slash) commands per
+    // application. This bot has 145 unique slash names, so registering all
+    // of them made Discord reject the WHOLE batch with "Invalid Form Body"
+    // and 0 commands showed up in Discord (2026-11-26). Fix: dedupe by
+    // name, validate each payload, and register the top 100 in priority
+    // order (music first). The rest stay available as + prefix commands
+    // and through the dashboard.
     // ══════════════════════════════════════════════════════════════════════════
 
     try {
-      const slashData = [];
+      const { buildSlashData } = require("../utils/buildSlashData");
+      const { slashData, skipped } = buildSlashData(
+        path.join(__dirname, "../commands")
+      );
 
-      const categoriesPath =
-        path.join(__dirname, "../commands");
-
-      for (
-        const category of fs
-          .readdirSync(categoriesPath)
-      ) {
-        const categoryPath =
-          path.join(
-            categoriesPath,
-            category
-          );
-
-        if (
-          !fs
-            .statSync(categoryPath)
-            .isDirectory()
-        ) {
-          continue;
-        }
-
-        const files =
-          fs
-            .readdirSync(categoryPath)
-            .filter(file =>
-              file.endsWith(".js")
-            );
-
-        for (const file of files) {
-          try {
-            const command =
-              require(
-                path.join(
-                  categoryPath,
-                  file
-                )
-              );
-
-            if (
-              command.data &&
-              typeof command.data.toJSON ===
-                "function"
-            ) {
-              slashData.push(
-                command.data.toJSON()
-              );
-            }
-          } catch (err) {
-            console.error(
-              `[Slash] Failed loading ${category}/${file}:`,
-              err.message
-            );
-          }
-        }
+      console.log(
+        `[Slash] Registering ${slashData.length} slash commands globally (limit 100, ${skipped.length} skipped).`
+      );
+      if (skipped.length) {
+        console.log("[Slash] Skipped:", skipped.join(" | "));
       }
 
       const rest = new REST({
@@ -321,7 +282,9 @@ module.exports = {
     } catch (err) {
       console.error(
         "[Slash] Failed:",
-        err.message
+        err.message,
+        err.code ? `(code ${err.code}, status ${err.status})` : "",
+        err.rawError ? JSON.stringify(err.rawError) : ""
       );
     }
 
