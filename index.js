@@ -91,13 +91,25 @@ for (const file of fs.readdirSync(eventsPath).filter(f => f.endsWith(".js"))) {
 // ── Shard events ─────────────────────────────────────────────────────────────
 const WebhookLogger = require("./logger/WebhookLogger");
 
-// ── Live dashboard API ────────────────────────────────────────────────────────
-// Started once the client is ready (see below). Disabled unless
-// DASHBOARD_ENABLED=true, and refuses to start without DASHBOARD_API_KEY.
-const { startDashboard } = require("./dashboard/api");
+// ── Live dashboard API — SHARED PORT ────────────────────────────────────────
+// The dashboard API is served on the bot's main keep-alive HTTP server
+// (below, process.env.PORT — the only port Railway exposes publicly), so
+// /api/* is reachable at the same public URL as the bot service. It is
+// disabled unless DASHBOARD_ENABLED=true, and refuses to answer without
+// DASHBOARD_API_KEY. Only shard 0 serves it.
+// Set DASHBOARD_SEPARATE_PORT=true to instead start the API on its own
+// port (DASHBOARD_PORT, default 3001) — local use only; Railway cannot
+// reach that port from a browser.
+const { handleDashboardRequest, startDashboard } = require("./dashboard/api");
 client.once("clientReady", () => {
   try {
-    startDashboard(client);
+    if (String(process.env.DASHBOARD_SEPARATE_PORT || "").toLowerCase() === "true") {
+      startDashboard(client);
+    } else if (String(process.env.DASHBOARD_ENABLED || "").toLowerCase() === "true" && process.env.DASHBOARD_API_KEY) {
+      console.log("[Dashboard] Live dashboard API shared on the main server (key required) — /api/* on the same public URL as the bot.");
+    } else if (String(process.env.DASHBOARD_ENABLED || "").toLowerCase() === "true") {
+      console.error("[Dashboard] DASHBOARD_API_KEY is not set — dashboard API will NOT start. Set a long random key in your env; the bot keeps running without the dashboard.");
+    }
   } catch (err) {
     console.error("[Dashboard] Failed to start:", err.message);
   }
@@ -136,9 +148,34 @@ process.on("SIGTERM", () => handleShutdown("SIGTERM"));
 process.on("SIGINT",  () => handleShutdown("SIGINT"));
 
 // ── Keep-alive HTTP server (Replit needs an open port) ───────────────────────
+// This is also the dashboard API server: Railway only exposes this one
+// port (process.env.PORT) publicly, so /api/* requests are delegated to
+// the dashboard handler below and everything else gets the keep-alive JSON.
 const http = require("http");
 const PORT = process.env.PORT || 3000;
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
+  try {
+    const pathname = new URL(req.url || "/", "http://localhost").pathname;
+    if (pathname.startsWith("/api/")) {
+      if (String(process.env.DASHBOARD_ENABLED || "").toLowerCase() !== "true") {
+        res.writeHead(404, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+        res.end(JSON.stringify({ ok: false, error: "Dashboard API is disabled" }));
+        return;
+      }
+      // handleDashboardRequest answers (including 401 when the key is
+      // missing/wrong, and OPTIONS preflight) and returns true; it
+      // returns false only for non-/api paths, which cannot happen here.
+      const handled = await handleDashboardRequest(client, process.env.DASHBOARD_API_KEY || "", req, res);
+      if (!handled && !res.writableEnded && !res.headersSent) {
+        res.writeHead(404, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
+        res.end(JSON.stringify({ ok: false, error: "Not found" }));
+      }
+      return;
+    }
+  } catch (err) {
+    if (res.headersSent || res.writableEnded) return;
+    // Fall through to the keep-alive JSON below on unexpected errors.
+  }
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify({ status: "ok", bot: client.user?.tag || "starting" }));
 });

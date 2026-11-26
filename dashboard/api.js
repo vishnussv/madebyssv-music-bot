@@ -14,9 +14,19 @@
 //  - No stack traces are returned, no tokens/keys are logged (only
 //    method + path + status).
 //
-// Wiring: index.js calls startDashboard(client) once on `clientReady`.
-// The API is disabled unless DASHBOARD_ENABLED=true. Default port 3001 —
-// separate from the keep-alive server on PORT (default 3000) in index.js.
+// Wiring — SHARED PORT (Railway): index.js mounts this API on the bot's
+// main keep-alive HTTP server (process.env.PORT, 8080 on Railway), so
+// /api/* is reachable at the SAME public URL as the bot service, e.g.
+// https://<railway-domain>/api/status — no separate port is exposed.
+// The keep-alive server delegates /api/* to handleDashboardRequest()
+// (below); every other path still returns the keep-alive JSON.
+// The API is disabled unless DASHBOARD_ENABLED=true, and refuses to
+// answer without DASHBOARD_API_KEY (401). Only shard 0 serves it.
+// Local / standalone use: startDashboard(client) still listens on its
+// own port (DASHBOARD_PORT, default 3001) when called directly, and
+// createDashboardServer(client, {apiKey}) still builds a standalone
+// server. Set DASHBOARD_SEPARATE_PORT=true in index.js to use that
+// separate port instead of the shared one.
 //
 // Player model: Poru owns playback (client.poru, same as +play/+pause/etc).
 // lavalink-client (client.lavalink) is only used to report Lavalink
@@ -555,75 +565,89 @@ const ROUTES = [
   ["POST", /^\/api\/player\/247$/, handle247],
 ];
 
-function createDashboardServer(client, options = {}) {
-  const apiKey = options.apiKey || "";
-  const server = http.createServer(async (req, res) => {
-    const started = Date.now();
-    let status = 200;
-    try {
-      const url = new URL(req.url || "/", "http://localhost");
-      const pathname = url.pathname;
+// ── shared request handler ──────────────────────────────────────────────
+// Handles one HTTP request. Returns true if it responded (any /api/*
+// path, including OPTIONS preflight and 401/404 for unknown /api routes),
+// false if the path is not /api/* and the caller should handle it
+// itself (e.g. the keep-alive server in index.js). Never logs keys/tokens.
+async function handleDashboardRequest(client, apiKey, req, res) {
+  const started = Date.now();
+  let status = 200;
+  let handled = false;
+  try {
+    const url = new URL(req.url || "/", "http://localhost");
+    const pathname = url.pathname;
 
-      // CORS preflight — no key needed, it carries no data.
-      if (req.method === "OPTIONS") {
-        res.writeHead(204, {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Headers": "X-Dashboard-Key, Content-Type",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-        });
-        res.end();
-        status = 204;
-        return;
-      }
+    // CORS preflight for /api/* — no key needed, it carries no data.
+    if (req.method === "OPTIONS" && pathname.startsWith("/api/")) {
+      res.writeHead(204, {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Headers": "X-Dashboard-Key, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      });
+      res.end();
+      status = 204;
+      handled = true;
+      return true;
+    }
 
-      if (!pathname.startsWith("/api/")) {
-        status = sendJson(res, 404, { ok: false, error: "Not found" });
-        return;
-      }
+    if (!pathname.startsWith("/api/")) return false;
+    handled = true;
 
-      // Auth on every /api/* route, including /api/health.
-      if (!keysEqual(req.headers["x-dashboard-key"], apiKey)) {
-        status = sendJson(res, 401, { ok: false, error: "Unauthorized — missing or wrong X-Dashboard-Key header" });
-        return;
-      }
+    // Auth on every /api/* route, including /api/health.
+    if (!keysEqual(req.headers["x-dashboard-key"], apiKey)) {
+      status = sendJson(res, 401, { ok: false, error: "Unauthorized — missing or wrong X-Dashboard-Key header" });
+      return true;
+    }
 
-      const route = ROUTES.find(([method, re]) => method === req.method && re.test(pathname));
-      if (!route) {
-        status = sendJson(res, 404, { ok: false, error: "Unknown endpoint" });
-        return;
-      }
+    const route = ROUTES.find(([method, re]) => method === req.method && re.test(pathname));
+    if (!route) {
+      status = sendJson(res, 404, { ok: false, error: "Unknown endpoint" });
+      return true;
+    }
 
-      let body = {};
-      if (req.method === "POST") {
-        try {
-          body = await readBody(req);
-        } catch (err) {
-          status = sendJson(res, 400, { ok: false, error: err.message });
-          return;
-        }
-      }
-
+    let body = {};
+    if (req.method === "POST") {
       try {
-        const result = await route[2](client, body, url.searchParams);
-        status = sendJson(res, result.status, result.body);
+        body = await readBody(req);
       } catch (err) {
-        // playerAction validation errors carry a .status (400); everything
-        // else is a 500 with the message only — never a stack trace.
-        const code = err?.status === 400 ? 400 : 500;
-        status = sendJson(res, code, { ok: false, error: err?.message || "Internal error" });
+        status = sendJson(res, 400, { ok: false, error: err.message });
+        return true;
       }
+    }
+
+    try {
+      const result = await route[2](client, body, url.searchParams);
+      status = sendJson(res, result.status, result.body);
     } catch (err) {
-      try {
-        status = sendJson(res, 500, { ok: false, error: err?.message || "Internal error" });
-      } catch (_) {
-        status = 500;
-      }
-    } finally {
-      // Log only method + path + status — never keys, tokens or bodies.
+      // playerAction validation errors carry a .status (400); everything
+      // else is a 500 with the message only — never a stack trace.
+      const code = err?.status === 400 ? 400 : 500;
+      status = sendJson(res, code, { ok: false, error: err?.message || "Internal error" });
+    }
+    return true;
+  } catch (err) {
+    try {
+      status = sendJson(res, 500, { ok: false, error: err?.message || "Internal error" });
+    } catch (_) {
+      status = 500;
+    }
+    return true;
+  } finally {
+    // Log only method + path + status — never keys, tokens or bodies.
+    if (handled) {
       try {
         console.log(`[Dashboard] ${req.method} ${new URL(req.url || "/", "http://localhost").pathname} ${status} ${Date.now() - started}ms`);
       } catch (_) {}
     }
+  }
+}
+
+function createDashboardServer(client, options = {}) {
+  const apiKey = options.apiKey || "";
+  const server = http.createServer(async (req, res) => {
+    const handled = await handleDashboardRequest(client, apiKey, req, res);
+    if (!handled) sendJson(res, 404, { ok: false, error: "Not found" });
   });
   return server;
 }
@@ -649,6 +673,26 @@ function startDashboard(client, options = {}) {
     return null;
   }
 
+  // Shared-server mode: register the handler on a server the caller
+  // already owns (e.g. the keep-alive server) instead of listening on
+  // a separate port. The handler only responds to /api/* paths and
+  // leaves every other path to the server's existing listener(s), so
+  // attach it before any catch-all listener, or — preferred — call
+  // handleDashboardRequest() from your own request dispatcher, as
+  // index.js does. Returns the shared server.
+  if (options.sharedServer) {
+    const shared = options.sharedServer;
+    shared.on("request", async (req, res) => {
+      try {
+        if (!res.writableEnded && !res.headersSent) {
+          await handleDashboardRequest(client, apiKey, req, res);
+        }
+      } catch (_) {}
+    });
+    console.log("[Dashboard] Live dashboard API shared on the caller's server (key required) — /api/* on the same URL as the bot.");
+    return shared;
+  }
+
   let port = Number(process.env.DASHBOARD_PORT ?? options.port ?? DEFAULT_PORT);
   if (!Number.isFinite(port) || port <= 0 || port > 65535) port = DEFAULT_PORT;
 
@@ -662,4 +706,4 @@ function startDashboard(client, options = {}) {
   return server;
 }
 
-module.exports = { startDashboard, createDashboardServer };
+module.exports = { startDashboard, createDashboardServer, handleDashboardRequest };

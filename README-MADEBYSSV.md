@@ -123,13 +123,26 @@ session and voice-state recovery.
 A small HTTP API (`dashboard/api.js`, Node built-in `http` only) that a
 separate static dashboard page uses to read bot status and control Poru
 playback. It is **off by default** and starts only after the client is
-ready (`index.js` calls `startDashboard(client)` on `clientReady`).
+ready.
+
+**Railway / shared port (the fix for the dashboard not connecting):**
+Railway only exposes the bot service's main port (`PORT`, 8080 on
+Railway) publicly, so the API no longer listens on its own port 3001 in
+production. `index.js` mounts it on the main keep-alive HTTP server
+(`handleDashboardRequest()` in `dashboard/api.js`): every `/api/*`
+request is delegated to the dashboard API, and every other path still
+returns the keep-alive `{status:"ok", bot: …}` JSON. `DASHBOARD_PORT`
+(3001) is now only for local standalone use — set
+`DASHBOARD_SEPARATE_PORT=true` to use a separate port instead of the
+shared one. `startDashboard()` / `createDashboardServer()` still work
+standalone for local use.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `DASHBOARD_ENABLED` | `false` | Set `true` to start the API |
-| `DASHBOARD_PORT` | `3001` | Separate from the keep-alive server on `PORT` (default 3000) |
-| `DASHBOARD_API_KEY` | _(empty)_ | **Required.** Long random key; the API refuses to start without it, and the bot keeps running. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Never commit it — anyone with this key can control music in any server the bot is in |
+| `DASHBOARD_PORT` | `3001` | Local standalone port only — **not used on Railway** |
+| `DASHBOARD_SEPARATE_PORT` | `false` | `true` = own port 3001 (local only); absent/`false` = shared main port |
+| `DASHBOARD_API_KEY` | _(empty)_ | **Required.** Long random key; the API refuses to answer without it, and the bot keeps running. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`. Never commit it — anyone with this key can control music in any server the bot is in |
 
 Every `/api/*` request must send header `X-Dashboard-Key: <key>` (wrong /
 missing → `401`). CORS allows any origin, but only with that header.
@@ -152,16 +165,28 @@ never a stack trace. Only shard 0 serves the API.
 - `POST /api/player/shuffle` `{guildId}`
 - `POST /api/player/247` `{guildId, enabled, voiceChannelId?, textChannelId?}` — reuses the existing 24/7 store (`Database.set247` + `enabled247`); enable needs a voice channel (player's, stored, or passed). No endpoint is faked: nothing returns `501`.
 
-**How the dashboard calls it:**
+**How the dashboard calls it — Railway (shared port):**
 
 ```bash
-# Base URL is the bot's public URL on the dashboard port, e.g. https://your-bot-host:3001
-curl -H "X-Dashboard-Key: $DASHBOARD_API_KEY" https://your-bot-host:3001/api/status
-curl -H "X-Dashboard-Key: $DASHBOARD_API_KEY" "https://your-bot-host:3001/api/player?guildId=123456789012345678"
+# Base URL is the bot service's Railway public domain — NO port, NO /api suffix.
+# e.g. https://madebyssv-music-bot-production.up.railway.app
+curl -H "X-Dashboard-Key: $DASHBOARD_API_KEY" https://<railway-domain>/api/status
+curl -H "X-Dashboard-Key: $DASHBOARD_API_KEY" "https://<railway-domain>/api/player?guildId=123456789012345678"
 curl -X POST -H "X-Dashboard-Key: $DASHBOARD_API_KEY" -H "Content-Type: application/json" \
   -d '{"guildId":"123456789012345678","query":"lofi beats"}' \
-  https://your-bot-host:3001/api/player/play
+  https://<railway-domain>/api/player/play
 ```
+
+**Connect the dashboard page (4 steps):**
+
+1. Open the MADEBYSSV Music Bot Dashboard page.
+2. Enter the Railway public domain URL (no trailing slash, no `/api` suffix — e.g. `https://madebyssv-music-bot-production.up.railway.app`).
+3. Enter the `DASHBOARD_API_KEY` from Railway Variables (copy it from Railway, never paste it in chat).
+4. Connect. The page then calls `<that URL>/api/status`, `/api/guilds`, `/api/player`, etc. with header `X-Dashboard-Key: <key>`.
+
+Locally, the same API is also available standalone on port 3001
+(`DASHBOARD_SEPARATE_PORT=true`, or `createDashboardServer()`), at
+`http://localhost:3001/api/status`.
 
 The dashboard itself is a static page — it cannot control Discord without
 this API running and reachable. See `dashboard/VERIFICATION.md` for the
