@@ -35,6 +35,7 @@ const interactionCreate = require("../events/interactionCreate");
 const cmd247 = require("../commands/music/247");
 const cmdAutoplay = require("../commands/music/autoplay");
 const cmdAfk = require("../commands/general/afk");
+const cmdHug = require("../commands/fun/hug");
 
 // /afk must opt out of the handler defer (see its noDefer comment): its
 // first response is showModal() (/afk set) or interaction.reply()
@@ -101,11 +102,11 @@ class FakeInteraction {
       createMessageComponentCollector: () => ({ on: () => {} }),
     };
   }
-  async editReply() {
+  async editReply(payload) {
     if (!this.deferred && !this.replied) {
       throw new Error("InteractionNotReplied");
     }
-    this.calls.push("editReply");
+    this.lastPayload = payload; this.calls.push("editReply");
     return { id: "msg1" };
   }
   async followUp() {
@@ -272,7 +273,51 @@ async function runCase(label, client, commandName, makeInteraction) {
     );
   }
 
-  if (failures.length) {
+  {
+  const client = {
+    commands: new Map([["hug", cmdHug]]),
+    emoji: { rightsort: "»", cross: "✕" },
+    getColor: () => 0x00d4ff,
+    util: { v2msg: (color, text) => ({ content: text }) },
+  };
+  const { interaction, errors } = await runCase("hug with user option", client, "hug", () => {
+    const i = new FakeInteraction("hug");
+    i.options.data = [{ name: "user", type: 6, value: "user2" }];
+    i.options.getUser = () => ({ id: "user2", username: "friend" });
+    i.options.getMember = () => ({ id: "user2", displayName: "Friend", user: { id: "user2", username: "friend" } });
+    return i;
+  });
+  check(
+    "hug with user option builds mentions and replies",
+    interaction.calls.join(",") === "deferReply,editReply" &&
+      errors.length === 0 &&
+      JSON.stringify(interaction.lastPayload || {}).includes("Friend"),
+    "calls=" + interaction.calls.join(",") + " errors=" + errors.join(" | ") + " payload=" + JSON.stringify(interaction.lastPayload)
+  );
+}
+
+{
+  const client = {
+    commands: new Map([["hug", cmdHug]]),
+    emoji: { rightsort: "»", cross: "✕" },
+    getColor: () => 0x00d4ff,
+    util: { v2msg: (color, text) => ({ content: text }) },
+  };
+  const { interaction, errors } = await runCase("hug without user option", client, "hug", () => {
+    const i = new FakeInteraction("hug");
+    i.options.data = [];
+    return i;
+  });
+  check(
+    "hug without user option asks to mention someone without crashing",
+    interaction.calls.join(",") === "deferReply,editReply" &&
+      errors.length === 0 &&
+      JSON.stringify(interaction.lastPayload || {}).includes("Mention someone"),
+    "calls=" + interaction.calls.join(",") + " errors=" + errors.join(" | ") + " payload=" + JSON.stringify(interaction.lastPayload)
+  );
+}
+
+if (failures.length) {
     console.log(`\n${failures.length} test(s) failed`);
     process.exit(1);
   }
